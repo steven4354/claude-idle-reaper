@@ -117,6 +117,10 @@ while read -r pid cpu tty args; do
     printf '%s\n\n' "$summary"
     printf '\033[1m▶ Pick up where you left off:\033[0m  claude --resume %s\n' "$sid"
     printf '\033[2m────────────────────────────────────────────\033[0m\n'
+    # terminals fall back to showing the cwd as tab title once the TUI dies;
+    # rename the tab to the session topic so reaped tabs stay identifiable
+    title=$(printf '%s\n' "$summary" | sed -n '1s/^Topic:[[:space:]]*//p' | cut -c1-60)
+    printf '\033]0;💤 %s\007' "${title:-claude session (reaped)}"
   } > "/dev/$tty" 2>/dev/null
 done < <(ps -axo pid=,%cpu=,tty=,args=)
 
