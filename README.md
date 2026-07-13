@@ -63,11 +63,32 @@ Topic: Diagnosing task system failures via telemetry
 Pending: Write P0 fix PR, merge circuit breaker, add staleness alert.
 
 ▶ Pick up where you left off:  claude --resume 10da943d-4991-4ec7-a4a1-46287e89d3a1
+   no retype needed — Ctrl-R ⏎, or type: cr
 ────────────────────────────────────────────
 ```
 
 (Without this, the tab goes blank on exit — Claude Code renders on the
 terminal's alternate screen, so the conversation vanishes with the process.)
+
+## Restarting without the mouse
+
+Selecting and copy-pasting the resume command gets old fast, so each reap also
+arms two keyboard-only paths:
+
+- **`cr`** — the reaper records `<session-id> <cwd>` per tty in
+  `~/.claude/scripts/reaped-<tty>`. Add `source ~/.claude/scripts/cr.zsh` to
+  your `~/.zshrc` and typing `cr` in a reaped tab restarts exactly that tab's
+  session (it cd's to the session's own project dir first, since
+  `claude --resume` resolves ids per directory). With the tab closed, `cr`
+  in any shell falls back to the machine's most recent reap, and
+  `cr <session-id>` resumes an explicit id.
+- **atuin** — if [atuin](https://github.com/atuinsh/atuin) is installed, the
+  resume command is registered in its history as the reap happens, so `Ctrl-R`
+  `Enter` restarts the session from any tab (it sits at the top of the search
+  until you run something else). No configuration; skipped when atuin is
+  absent.
+
+Records older than 30 days are pruned automatically.
 
 ## Usage beyond the scheduled timer
 
@@ -104,12 +125,15 @@ or copy `reap-idle-claude.sh` to `~/.claude/scripts/`, `sed` your `$HOME` into
 
 ## Implementation notes (the non-obvious parts)
 
-- **PID → session mapping without lsof.** Claude Code doesn't keep its
-  transcript file open. Resumed sessions carry the session UUID in their
-  command line (`claude --resume <uuid>`); fresh sessions are matched by
-  transcript file *birth time* (`stat -f %B`) falling just after process start.
-  Near-simultaneous launches are disambiguated by claiming each transcript at
-  most once; anything ambiguous is skipped, not killed.
+- **PID → session mapping.** Claude Code doesn't keep its transcript file
+  open. Resumed sessions carry the session UUID in their command line
+  (`claude --resume <uuid>`); fresh sessions are matched by transcript file
+  *birth time* (`stat -f %B`) falling just after process start, scanning only
+  the project directory derived from the process's cwd (`lsof -d cwd`) — a
+  global scan let transcripts of unrelated `claude -p` runs, including this
+  script's own summarizer, win the birth-time race. Near-simultaneous launches
+  are disambiguated by claiming each transcript at most once; anything
+  ambiguous is skipped, not killed.
 - **Transcript mtime lies.** Claude Code bulk-touches transcript mtimes
   (dozens of files at the same second, e.g. during startup grooming), so
   "recently modified" ≠ "recently active". The script reads the last embedded

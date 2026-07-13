@@ -24,9 +24,12 @@ IDLE_MINS=${IDLE_MINS:-240}
 QUIET_MINS=${QUIET_MINS:-120}
 MAX_KILLS=${MAX_KILLS:-100}
 PROJECTS="$HOME/.claude/projects"
+REG_DIR=${REG_DIR:-$HOME/.claude/scripts}  # where reaped-<tty> resume records go (read by cr.zsh)
 CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}
 now=$(date +%s)
 killed=0
+mkdir -p "$REG_DIR"
+find "$REG_DIR" -name 'reaped-ttys*' -mtime +30 -delete 2>/dev/null
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 
@@ -130,13 +133,30 @@ while read -r pid cpu tty args; do
   kill -0 "$pid" 2>/dev/null && { log "pid=$pid ignored SIGTERM, leaving it alone"; continue; }
   killed=$((killed + 1))
 
+  # keyboard-only restart: the tab's shell survives the reap, so record
+  # "<session-id>\t<cwd>" per tty for the `cr` function (cr.zsh) and register
+  # the resume command in atuin (when installed) so Ctrl-R surfaces it in any
+  # tab. cwd comes from the transcript's own records — `claude --resume`
+  # resolves ids per project dir, so resuming elsewhere must cd there first.
+  resume="claude --resume $sid"
+  scwd=$(tail -c 50000 "$sess" | grep -o '"cwd":"[^"]*"' | tail -1 | cut -d'"' -f4)
+  printf '%s\t%s\n' "$sid" "${scwd:-$HOME}" > "$REG_DIR/reaped-$tty" 2>/dev/null
+  hint="type: cr"
+  if command -v atuin >/dev/null 2>&1; then
+    ( cd "${scwd:-$HOME}" 2>/dev/null || cd "$HOME"
+      export ATUIN_SESSION=${ATUIN_SESSION:-$(atuin uuid)}
+      hid=$(atuin history start -- "$resume") && atuin history end --exit 0 -- "$hid"
+    ) >/dev/null 2>&1 && hint="Ctrl-R ⏎, or $hint"
+  fi
+
   summary=$(summarize "$sess")
   [ -n "$summary" ] || summary="(summary unavailable — transcript intact)"
   {
     printf '\n\033[2m────────────────────────────────────────────\033[0m\n'
     printf '\033[1m💤 Idle Claude session closed to free %sMB\033[0m (no input for %s)\n\n' "$rss_mb" "$(fmt_idle "$idle")"
     printf '%s\n\n' "$summary"
-    printf '\033[1m▶ Pick up where you left off:\033[0m  claude --resume %s\n' "$sid"
+    printf '\033[1m▶ Pick up where you left off:\033[0m  %s\n' "$resume"
+    printf '\033[2m   no retype needed — %s\033[0m\n' "$hint"
     printf '\033[2m────────────────────────────────────────────\033[0m\n'
     # terminals fall back to showing the cwd as tab title once the TUI dies;
     # rename the tab to the session topic so reaped tabs stay identifiable
