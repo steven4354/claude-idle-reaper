@@ -41,7 +41,7 @@ cat > "$PLIST" <<EOF
     <string>/bin/bash</string>
     <string>$SCRIPT_DEST</string>
   </array>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>$HOME/.claude/scripts/idle-reaper.log</string>
   <key>StandardErrorPath</key><string>$HOME/.claude/scripts/idle-reaper.log</string>
 </dict>
@@ -52,9 +52,10 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 echo "Installed: $SCRIPT_DEST"
-echo "Loaded launchd agent '$LABEL' (runs hourly; log: ~/.claude/scripts/idle-reaper.log)"
+echo "Loaded launchd agent '$LABEL' (runs every 5 min; log: ~/.claude/scripts/idle-reaper.log)"
 echo
 echo "Dry run — what it would reap right now:"
 DRY_RUN=1 bash "$SCRIPT_DEST"
 echo
-echo "Tune by editing $PLIST (e.g. add an EnvironmentVariables dict with IDLE_HOURS/QUIET_MINS)."
+echo "Tune by editing $PLIST — add an EnvironmentVariables dict, e.g. IDLE_MINS"
+echo "(minutes of tab idle; IDLE_HOURS still works), QUIET_MINS, or StartInterval."

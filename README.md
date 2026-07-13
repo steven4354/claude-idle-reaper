@@ -8,9 +8,9 @@ Free the RAM held by idle Claude Code sessions — without losing them.
 curl -fsSL https://raw.githubusercontent.com/steven4354/claude-idle-reaper/main/install.sh | bash
 ```
 
-That installs the script to `~/.claude/scripts/`, loads an hourly launchd
-agent, and finishes with a dry-run so you immediately see what it would reap.
-Nothing is killed until the first hourly run.
+That installs the script to `~/.claude/scripts/`, loads a launchd agent that
+runs every 5 minutes, and finishes with a dry-run so you immediately see what
+it would reap. Nothing is killed until the first scheduled run.
 
 Uninstall:
 
@@ -37,10 +37,11 @@ session losslessly. So: kill idle sessions, keep the resume path warm.
 
 ## What it does
 
-A ~130-line bash script, run hourly by launchd, that:
+A ~130-line bash script, run every 5 minutes by launchd, that:
 
 1. Finds `claude` TUI processes that are safely idle — **all** of:
-   - no keystroke in their tab for `IDLE_HOURS` (default 4h, via tty atime)
+   - no keystroke in their tab for `IDLE_MINS` (default 240; `IDLE_HOURS` still
+     honored, e.g. `IDLE_HOURS=2`), measured via tty atime
    - CPU at 0
    - no new transcript message for `QUIET_MINS` (default 2h) — this protects
      autonomous agents/loops that work without keyboard input
@@ -68,7 +69,7 @@ Pending: Write P0 fix PR, merge circuit breaker, add staleness alert.
 (Without this, the tab goes blank on exit — Claude Code renders on the
 terminal's alternate screen, so the conversation vanishes with the process.)
 
-## Usage beyond the hourly timer
+## Usage beyond the scheduled timer
 
 Dry run (list victims, touch nothing):
 
@@ -81,6 +82,11 @@ Reap one specific tab on demand, overriding the idle guards:
 ```bash
 ONLY_PID=12345 IDLE_HOURS=0 QUIET_MINS=0 bash ~/.claude/scripts/reap-idle-claude.sh
 ```
+
+Reap more aggressively — sub-hour idle, checked often — by adding an
+`EnvironmentVariables` dict (`IDLE_MINS`, `QUIET_MINS`) and lowering
+`StartInterval` in the plist. Be careful: a short `QUIET_MINS` will reap
+autonomous loops between wakeups (see Caveats).
 
 Log: `~/.claude/scripts/idle-reaper.log`
 
