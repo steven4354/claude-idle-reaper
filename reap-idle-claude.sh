@@ -16,7 +16,11 @@
 # ONLY_PID=n  — restrict to one process (testing / reap-on-demand)
 # MAX_KILLS=n — cap reaps per run
 
-IDLE_HOURS=${IDLE_HOURS:-4}
+# Idle threshold: minutes with no keystroke in the tab. IDLE_HOURS is still
+# honored (IDLE_HOURS=2 == IDLE_MINS=120) so old configs and the on-demand
+# `IDLE_HOURS=0` override keep working; IDLE_MINS wins if both are set.
+IDLE_MINS=${IDLE_MINS:-${IDLE_HOURS:+$((IDLE_HOURS * 60))}}
+IDLE_MINS=${IDLE_MINS:-240}
 QUIET_MINS=${QUIET_MINS:-120}
 MAX_KILLS=${MAX_KILLS:-100}
 PROJECTS="$HOME/.claude/projects"
@@ -25,6 +29,11 @@ now=$(date +%s)
 killed=0
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+
+fmt_idle() { # seconds -> "13m" (sub-2h) or "4h" — readable at any threshold
+  local m=$(( $1 / 60 ))
+  if [ "$m" -ge 120 ]; then printf '%dh' $(( m / 60 )); else printf '%dm' "$m"; fi
+}
 
 with_timeout() { # seconds cmd...
   local t=$1; shift
@@ -82,7 +91,7 @@ while read -r pid cpu tty args; do
   [ "${cpu%.*}" -eq 0 ] 2>/dev/null || continue
 
   idle=$(( now - $(stat -f %a "/dev/$tty") ))
-  [ "$idle" -ge $(( IDLE_HOURS * 3600 )) ] || continue
+  [ "$idle" -ge $(( IDLE_MINS * 60 )) ] || continue
 
   sess=$(session_file "$pid" "$args")
   if [ -z "$sess" ] || [ ! -f "$sess" ]; then
@@ -99,11 +108,11 @@ while read -r pid cpu tty args; do
   sid=$(basename "$sess" .jsonl)
   rss_mb=$(( $(ps -o rss= -p "$pid" | tr -d ' ') / 1024 ))
   if [ -n "$DRY_RUN" ]; then
-    log "DRY-RUN would reap pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$((idle/3600))h session=$sid"
+    log "DRY-RUN would reap pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid"
     continue
   fi
 
-  log "reaping pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$((idle/3600))h session=$sid"
+  log "reaping pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid"
   kill "$pid" 2>/dev/null || continue
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { log "pid=$pid ignored SIGTERM, leaving it alone"; continue; }
@@ -113,7 +122,7 @@ while read -r pid cpu tty args; do
   [ -n "$summary" ] || summary="(summary unavailable — transcript intact)"
   {
     printf '\n\033[2m────────────────────────────────────────────\033[0m\n'
-    printf '\033[1m💤 Idle Claude session closed to free %sMB\033[0m (no input for %sh)\n\n' "$rss_mb" "$((idle/3600))"
+    printf '\033[1m💤 Idle Claude session closed to free %sMB\033[0m (no input for %s)\n\n' "$rss_mb" "$(fmt_idle "$idle")"
     printf '%s\n\n' "$summary"
     printf '\033[1m▶ Pick up where you left off:\033[0m  claude --resume %s\n' "$sid"
     printf '\033[2m────────────────────────────────────────────\033[0m\n'
