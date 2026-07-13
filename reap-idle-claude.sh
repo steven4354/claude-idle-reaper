@@ -51,21 +51,30 @@ with_timeout() { # seconds cmd...
 
 claimed=" "
 session_file() { # pid args -> transcript path (empty if unmappable)
-  local uuid start best bestd f b d
+  local uuid start best bestd f b d cwd proj
   uuid=$(grep -oE '\-\-?r(esume)? [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$2" | awk '{print $2}')
   if [ -n "$uuid" ]; then
     ls "$PROJECTS"/*/"$uuid".jsonl 2>/dev/null | head -1
     return
   fi
   start=$(date -j -f '%a %b %d %T %Y' "$(ps -o lstart= -p "$1" | tr -s ' ')" +%s 2>/dev/null) || return
-  # fresh session: its transcript is created shortly after process start;
-  # near-simultaneous launches contend for the same file, so claimed ones are out
+  # a session's transcript lives under the project dir derived from its cwd
+  # (non-alphanumerics become '-'). Scan only that dir: a global scan let this
+  # script's own `claude -p` summarizer transcripts (cwd=/, project '-') win
+  # the birth-time race, printing recaps and resume ids for the wrong session
+  # and evaluating the QUIET_MINS guard against the wrong transcript.
+  cwd=$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  [ -n "$cwd" ] || return
+  proj=$(printf '%s' "$cwd" | sed 's/[^a-zA-Z0-9]/-/g')
+  # fresh session: its transcript is created shortly after process start —
+  # never before it, so a negative delta beyond clock granularity is another
+  # session's file; near-simultaneous launches contend, so claimed ones are out
   bestd=1800
-  for f in "$PROJECTS"/*/*.jsonl; do
+  for f in "$PROJECTS/$proj"/*.jsonl; do
     case "$claimed" in *" $f "*) continue;; esac
     b=$(stat -f %B "$f" 2>/dev/null) || continue
     d=$((b - start))
-    if [ "$d" -ge -120 ] && [ "$d" -le "$bestd" ]; then bestd=$d; best=$f; fi
+    if [ "$d" -ge -5 ] && [ "$d" -le "$bestd" ]; then bestd=$d; best=$f; fi
   done
   echo "$best"
 }
