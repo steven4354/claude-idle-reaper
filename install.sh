@@ -13,7 +13,7 @@ LABEL="com.user.claude-idle-reaper"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-  rm -f "$PLIST" "$SCRIPT_DEST"
+  rm -f "$PLIST" "$SCRIPT_DEST" "$HOME/.local/bin/ccr"
   echo "Uninstalled. Log left at ~/.claude/scripts/idle-reaper.log if you want it."
   exit 0
 fi
@@ -21,14 +21,19 @@ fi
 command -v claude >/dev/null 2>&1 || \
   echo "warning: 'claude' not found on PATH — the reaper needs it for summaries (set CLAUDE_BIN in the plist if it lives elsewhere)." >&2
 
-mkdir -p "$HOME/.claude/scripts"
+mkdir -p "$HOME/.claude/scripts" "$HOME/.local/bin"
 # running from a checkout uses the local copy; `curl | bash` fetches from the repo
 if [ -f "$(dirname "$0")/reap-idle-claude.sh" ]; then
   cp "$(dirname "$0")/reap-idle-claude.sh" "$SCRIPT_DEST"
+  cp "$(dirname "$0")/ccr" "$HOME/.local/bin/ccr"
 else
   curl -fsSL "$REPO_RAW/reap-idle-claude.sh" -o "$SCRIPT_DEST"
+  curl -fsSL "$REPO_RAW/ccr" -o "$HOME/.local/bin/ccr"
 fi
-chmod +x "$SCRIPT_DEST"
+chmod +x "$SCRIPT_DEST" "$HOME/.local/bin/ccr"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *)
+  echo "note: ~/.local/bin is not on your PATH — add it so 'ccr' (resume a reaped tab) works." >&2 ;;
+esac
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -59,3 +64,6 @@ DRY_RUN=1 bash "$SCRIPT_DEST"
 echo
 echo "Tune by editing $PLIST — add an EnvironmentVariables dict, e.g. IDLE_MINS"
 echo "(minutes of tab idle; IDLE_HOURS still works), QUIET_MINS, or StartInterval."
+echo
+echo "Installed 'ccr' to ~/.local/bin — typing it in a reaped tab restarts that"
+echo "tab's session, no copy-paste."
