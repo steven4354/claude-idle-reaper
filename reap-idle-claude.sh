@@ -24,8 +24,12 @@ IDLE_MINS=${IDLE_MINS:-240}
 QUIET_MINS=${QUIET_MINS:-120}
 MAX_KILLS=${MAX_KILLS:-100}
 PROJECTS="$HOME/.claude/projects"
-REG_DIR=${REG_DIR:-$HOME/.claude/scripts}  # where reaped-<tty> resume records go (read by cr.zsh)
+REG_DIR=${REG_DIR:-$HOME/.claude/scripts}  # where reaped-<tty> resume records go (read by ccr)
 CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}
+# launchd's minimal PATH misses Homebrew/cargo installs, so probe the usual
+# homes like CLAUDE_BIN does — a bare `command -v atuin` silently disarmed
+# the Ctrl-R resume path on every scheduled run
+ATUIN_BIN=${ATUIN_BIN:-$(command -v atuin || ls /opt/homebrew/bin/atuin /usr/local/bin/atuin "$HOME/.atuin/bin/atuin" 2>/dev/null | head -1)}
 now=$(date +%s)
 killed=0
 mkdir -p "$REG_DIR"
@@ -134,18 +138,18 @@ while read -r pid cpu tty args; do
   killed=$((killed + 1))
 
   # keyboard-only restart: the tab's shell survives the reap, so record
-  # "<session-id>\t<cwd>" per tty for the `cr` function (cr.zsh) and register
-  # the resume command in atuin (when installed) so Ctrl-R surfaces it in any
+  # "<session-id>\t<cwd>" per tty for the `ccr` executable and register the
+  # resume command in atuin (when installed) so Ctrl-R surfaces it in any
   # tab. cwd comes from the transcript's own records — `claude --resume`
   # resolves ids per project dir, so resuming elsewhere must cd there first.
   resume="claude --resume $sid"
   scwd=$(tail -c 50000 "$sess" | grep -o '"cwd":"[^"]*"' | tail -1 | cut -d'"' -f4)
   printf '%s\t%s\n' "$sid" "${scwd:-$HOME}" > "$REG_DIR/reaped-$tty" 2>/dev/null
-  hint="type: cr"
-  if command -v atuin >/dev/null 2>&1; then
+  hint="run: ccr"
+  if [ -n "$ATUIN_BIN" ] && [ -x "$ATUIN_BIN" ]; then
     ( cd "${scwd:-$HOME}" 2>/dev/null || cd "$HOME"
-      export ATUIN_SESSION=${ATUIN_SESSION:-$(atuin uuid)}
-      hid=$(atuin history start -- "$resume") && atuin history end --exit 0 -- "$hid"
+      export ATUIN_SESSION=${ATUIN_SESSION:-$("$ATUIN_BIN" uuid)}
+      hid=$("$ATUIN_BIN" history start -- "$resume") && "$ATUIN_BIN" history end --exit 0 -- "$hid"
     ) >/dev/null 2>&1 && hint="Ctrl-R ⏎, or $hint"
   fi
 

@@ -1,0 +1,24 @@
+#!/bin/bash
+# ccr — claude-code-resume: restart the Claude Code session that was reaped in
+# THIS terminal tab (reap-idle-claude.sh records one "<id>\t<cwd>" file per tty).
+# A PATH executable rather than a shell function on purpose: reaped tabs are by
+# definition OLD shells, which resolve new executables immediately but would
+# never see a function added to zshrc after they started. (A function also
+# collides with CodeRabbit's `cr` binary.)
+# Usage: ccr           resume this tab's reaped session
+#        ccr <id>      resume an explicit session id
+# No record for this tty -> falls back to the machine's most recent reap.
+REG_DIR=${CCR_REG_DIR:-$HOME/.claude/scripts}
+[ -n "$1" ] && exec claude --resume "$1"
+t=$(tty 2>/dev/null)
+reg="$REG_DIR/reaped-${t##*/}"
+if [ ! -f "$reg" ]; then
+  reg=$(ls -t "$REG_DIR"/reaped-ttys* 2>/dev/null | head -1)
+  [ -n "$reg" ] || { echo "ccr: no reaped session recorded" >&2; exit 1; }
+  echo "ccr: nothing reaped in this tab — resuming most recent reap ($(basename "$reg"))" >&2
+fi
+IFS=$'\t' read -r id cwd < "$reg"
+[ -n "$id" ] || { echo "ccr: $reg is empty" >&2; exit 1; }
+# `claude --resume` resolves ids per project dir — run from the session's cwd
+cd "${cwd:-$HOME}" 2>/dev/null || cd "$HOME"
+exec claude --resume "$id"

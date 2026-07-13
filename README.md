@@ -63,7 +63,7 @@ Topic: Diagnosing task system failures via telemetry
 Pending: Write P0 fix PR, merge circuit breaker, add staleness alert.
 
 ▶ Pick up where you left off:  claude --resume 10da943d-4991-4ec7-a4a1-46287e89d3a1
-   no retype needed — Ctrl-R ⏎, or type: cr
+   no retype needed — Ctrl-R ⏎, or run: ccr
 ────────────────────────────────────────────
 ```
 
@@ -75,18 +75,22 @@ terminal's alternate screen, so the conversation vanishes with the process.)
 Selecting and copy-pasting the resume command gets old fast, so each reap also
 arms two keyboard-only paths:
 
-- **`cr`** — the reaper records `<session-id> <cwd>` per tty in
-  `~/.claude/scripts/reaped-<tty>`. Add `source ~/.claude/scripts/cr.zsh` to
-  your `~/.zshrc` and typing `cr` in a reaped tab restarts exactly that tab's
-  session (it cd's to the session's own project dir first, since
-  `claude --resume` resolves ids per directory). With the tab closed, `cr`
-  in any shell falls back to the machine's most recent reap, and
-  `cr <session-id>` resumes an explicit id.
+- **`ccr`** — the reaper records `<session-id> <cwd>` per tty in
+  `~/.claude/scripts/reaped-<tty>`, and the installer puts a small `ccr`
+  executable in `~/.local/bin`. Typing `ccr` in a reaped tab restarts exactly
+  that tab's session (it cd's to the session's own project dir first, since
+  `claude --resume` resolves ids per directory). It's a PATH executable rather
+  than a shell function on purpose: reaped tabs are by definition old shells,
+  which pick up new executables immediately but would never see a function
+  added to your zshrc after they started. With the tab closed, `ccr` in any
+  shell falls back to the machine's most recent reap, and `ccr <session-id>`
+  resumes an explicit id.
 - **atuin** — if [atuin](https://github.com/atuinsh/atuin) is installed, the
   resume command is registered in its history as the reap happens, so `Ctrl-R`
   `Enter` restarts the session from any tab (it sits at the top of the search
   until you run something else). No configuration; skipped when atuin is
-  absent.
+  absent. (The reaper probes Homebrew/cargo install locations itself — launchd
+  jobs run with a minimal PATH that misses them.)
 
 Records older than 30 days are pruned automatically.
 
