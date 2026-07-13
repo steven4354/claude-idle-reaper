@@ -37,7 +37,10 @@ fmt_idle() { # seconds -> "13m" (sub-2h) or "4h" — readable at any threshold
 
 with_timeout() { # seconds cmd...
   local t=$1; shift
-  "$@" & local p=$!
+  # <&0 is load-bearing: a backgrounded command in a non-interactive shell gets
+  # its stdin reassigned to /dev/null, which would silently drop the transcript
+  # piped in by summarize(). Explicitly reattach fd 0 (the pipe) to the job.
+  "$@" <&0 & local p=$!
   # watchdog must not inherit our stdout: a $(capture) waits for the pipe to
   # close, so an inherited fd would block the caller until the sleep finishes
   ( sleep "$t"; kill -9 "$p" 2>/dev/null ) >/dev/null 2>&1 & local w=$!
