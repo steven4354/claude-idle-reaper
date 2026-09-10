@@ -25,10 +25,14 @@ mkdir -p "$HOME/.claude/scripts"
 # running from a checkout uses the local copy; `curl | bash` fetches from the repo
 if [ -f "$(dirname "$0")/reap-idle-claude.sh" ]; then
   cp "$(dirname "$0")/reap-idle-claude.sh" "$SCRIPT_DEST"
+  cp "$(dirname "$0")/transcript-digest.py" "$HOME/.claude/scripts/transcript-digest.py"
+  mkdir -p "$HOME/.local/bin" && cp "$(dirname "$0")/ccr" "$HOME/.local/bin/ccr"
 else
   curl -fsSL "$REPO_RAW/reap-idle-claude.sh" -o "$SCRIPT_DEST"
+  curl -fsSL "$REPO_RAW/transcript-digest.py" -o "$HOME/.claude/scripts/transcript-digest.py"
+  mkdir -p "$HOME/.local/bin" && curl -fsSL "$REPO_RAW/ccr" -o "$HOME/.local/bin/ccr"
 fi
-chmod +x "$SCRIPT_DEST"
+chmod +x "$SCRIPT_DEST" "$HOME/.claude/scripts/transcript-digest.py" "$HOME/.local/bin/ccr"
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
