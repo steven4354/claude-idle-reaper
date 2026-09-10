@@ -20,6 +20,10 @@
 #     subagent transcript, hence the find -L)
 #   - an artifact watch armed in the last WATCH_HOURS (transcript heuristic:
 #     watches are in-process only, nothing on disk records them)
+#   - any of the above on a BRANCH DESCENDANT of the mapped transcript that no
+#     other live TUI holds: a session that forked in place can keep reporting
+#     the pre-fork id, so the descendants are treated as candidates too, and
+#     the recap/resume goes to the most recently active one (others listed)
 #
 # DRY_RUN=1   — list what would be reaped, touch nothing
 # ONLY_PID=n  — restrict to one process (testing / reap-on-demand)
@@ -146,6 +150,49 @@ last_activity() { # transcript -> epoch of last real message (mtime is unreliabl
   stat -f %m "$1"
 }
 
+# session ids held right now by other live TUIs (their sessions files). A
+# branch descendant one of them holds is theirs, not the pid being mapped.
+live_ids=" $(for f in "$HOME"/.claude*/sessions/*.json; do
+  kill -0 "$(basename "$f" .json)" 2>/dev/null && sed -n 's/.*"sessionId":"\([0-9a-f-]\{36\}\)".*/\1/p' "$f"
+done 2>/dev/null | tr '\n' ' ') "
+
+branch_candidates() { # transcript pid-start-epoch -> candidate transcripts, mapped one first
+  # A TUI that forks in place (/branch, or resuming a session another tab
+  # already holds) can keep reporting the PRE-fork id in sessions/<pid>.json.
+  # Seen 2026-09-10: two tabs reaped six seconds apart as the same parent id
+  # while their real transcripts (Branch 4, Branch 5) were never named, and
+  # Branch 5 had been working six minutes earlier, so the quiet guard ran
+  # against the wrong file and the recap pointed at the wrong session.
+  # A branch copies its parent's lines, parent sessionId included, so a
+  # transcript born after this process started that carries the mapped id
+  # (or a descendant's) is one this process may really be on. Descendants
+  # held by another live TUI are used for chaining but never returned.
+  local x=$1 start=$2 dir ids f b id found new
+  dir=$(dirname "$x"); ids=" $(basename "$x" .jsonl) "
+  printf '%s\n' "$x"
+  local pool=()
+  for f in "$dir"/*.jsonl; do
+    [ "$f" = "$x" ] && continue
+    b=$(stat -f %B "$f" 2>/dev/null) || continue
+    [ "$b" -ge $((start - 5)) ] && pool+=("$f")
+  done
+  [ ${#pool[@]} -gt 0 ] || return 0
+  found=" "
+  while :; do
+    new=
+    for f in "${pool[@]}"; do
+      case "$found" in *" $f "*) continue;; esac
+      for id in $ids; do
+        grep -q -m1 "\"sessionId\":\"$id\"" "$f" || continue
+        id=$(basename "$f" .jsonl); found="$found$f "; ids="$ids$id "; new=1
+        case "$live_ids" in *" $id "*) ;; *) printf '%s\n' "$f";; esac
+        break
+      done
+    done
+    [ -n "$new" ] || break
+  done
+}
+
 while read -r pid cpu tty args; do
   [ "$killed" -ge "$MAX_KILLS" ] && break
   cmd=${args%% *}
@@ -196,13 +243,33 @@ while read -r pid cpu tty args; do
     log "skip pid=$pid tty=$tty: no transcript mapping"
     continue
   fi
-  claimed="$claimed$sess "
-  quiet=$(( now - $(last_activity "$sess") ))
+  # the mapped transcript plus any branch descendant this process may have
+  # forked into (see branch_candidates); every guard below covers all of them
+  pstart=$(date -j -f '%a %b %d %T %Y' "$(ps -o lstart= -p "$pid" | tr -s ' ' | sed 's/^ //')" +%s 2>/dev/null)
+  cands=$(branch_candidates "$sess" "${pstart:-0}")
+
+  quiet=; sess_active=
+  while IFS= read -r f; do
+    q=$(( now - $(last_activity "$f") ))
+    if [ -z "$quiet" ] || [ "$q" -lt "$quiet" ]; then quiet=$q; sess_active=$f; fi
+  done <<<"$cands"
   if [ "$quiet" -lt $(( QUIET_MINS * 60 )) ]; then
-    log "skip pid=$pid tty=$tty: transcript active ${quiet}s ago ($(basename "$sess"))"
+    log "skip pid=$pid tty=$tty: transcript active ${quiet}s ago ($(basename "$sess_active"))"
     continue
   fi
 
+  # recap and resume go to the most recently active candidate that an
+  # earlier pid in this sweep has not already taken; the rest are listed
+  primary=
+  while IFS= read -r f; do
+    case "$claimed" in *" $f "*) continue;; esac
+    primary=$f; break
+  done < <(while IFS= read -r f; do printf '%s\t%s\n' "$(last_activity "$f")" "$f"; done <<<"$cands" | sort -rn | cut -f2)
+  primary=${primary:-$sess}
+  claimed="$claimed$primary "
+  alternates=$(grep -vx -F "$primary" <<<"$cands")
+  alt_ids=$(while IFS= read -r f; do [ -n "$f" ] && basename "$f" .jsonl | cut -c1-8; done <<<"$alternates" | paste -sd, -)
+  sess=$primary
   sid=$(basename "$sess" .jsonl)
 
   # background tasks and subagents stream into the session scratchpad:
@@ -210,8 +277,15 @@ while read -r pid cpu tty args; do
   # .output is a symlink to its live transcript, so -L follows it. Recent
   # write -> work is (or just was) running; its completion notification may not
   # be absorbed yet, and neither survives a kill.
-  tdir="/private/tmp/claude-$(id -u)/$(basename "$(dirname "$sess")")/$sid/tasks"
-  busy_task=$(find -L "$tdir" -name '*.output' -mmin -"$QUIET_MINS" 2>/dev/null | head -1)
+  # The scratchpad keeps the LAUNCH id after an in-place fork (a parent's
+  # tasks/ was found holding its Branch 5 child's subagent symlinks), so
+  # every candidate's scratchpad is checked.
+  busy_task=
+  while IFS= read -r f; do
+    tdir="/private/tmp/claude-$(id -u)/$(basename "$(dirname "$f")")/$(basename "$f" .jsonl)/tasks"
+    busy_task=$(find -L "$tdir" -name '*.output' -mmin -"$QUIET_MINS" 2>/dev/null | head -1)
+    [ -n "$busy_task" ] && break
+  done <<<"$cands"
   if [ -n "$busy_task" ]; then
     log "skip pid=$pid tty=$tty: background task active ($(basename "$busy_task"))"
     continue
@@ -221,9 +295,12 @@ while read -r pid cpu tty args; do
   # grep the transcript tail for the arming marker the Artifact tool result
   # prints, and honor it for WATCH_HOURS. After that, reaping wins: RAM comes
   # back, and --resume usually re-arms the most recent watch.
-  warm=$(tail -c 500000 "$sess" | grep -E 'Live subscription|auto-replies armed|"action": ?"watch"' >/dev/null \
-    && tail -c 500000 "$sess" | grep -E 'Live subscription|auto-replies armed|"action": ?"watch"' \
-       | grep -oE '"timestamp": ?"[0-9T:.-]+' | tail -1 | grep -oE '[0-9T:.-]+$')
+  warm=
+  while IFS= read -r f; do
+    w=$(tail -c 500000 "$f" | grep -E 'Live subscription|auto-replies armed|"action": ?"watch"' \
+        | grep -oE '"timestamp": ?"[0-9T:.-]+' | tail -1 | grep -oE '[0-9T:.-]+$')
+    [ -n "$w" ] && [ "$w" \> "$warm" ] && warm=$w
+  done <<<"$cands"
   if [ -n "$warm" ]; then
     wts=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "${warm%%.*}" +%s 2>/dev/null)
     if [ -n "$wts" ] && [ $(( now - wts )) -lt $(( WATCH_HOURS * 3600 )) ]; then
@@ -234,11 +311,11 @@ while read -r pid cpu tty args; do
 
   rss_mb=$(( $(ps -o rss= -p "$pid" | tr -d ' ') / 1024 ))
   if [ -n "$DRY_RUN" ]; then
-    log "DRY-RUN would reap pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid"
+    log "DRY-RUN would reap pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid${alt_ids:+ alternates=$alt_ids}"
     continue
   fi
 
-  log "reaping pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid"
+  log "reaping pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid${alt_ids:+ alternates=$alt_ids}"
   kill "$pid" 2>/dev/null || continue
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { log "pid=$pid ignored SIGTERM, leaving it alone"; continue; }
@@ -273,6 +350,16 @@ while read -r pid cpu tty args; do
     printf '%s\n\n' "$summary"
     printf '\033[1m▶ Pick up where you left off:\033[0m  %s\n' "$resume"
     printf '\033[2m   no retype needed — %s\033[0m\n' "$hint"
+    if [ -n "$alternates" ]; then
+      printf '\n\033[1m⚠ This tab forked in place — it may instead have been on:\033[0m\n'
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        aid=$(basename "$f" .jsonl)
+        atitle=$(sed -n 's/.*"customTitle":"\(.*\)".*/\1/p' "$(dirname "$f")/$aid/custom-title.json" 2>/dev/null | cut -c1-70)
+        printf '   %sclaude --resume %s\n\033[2m      %slast active %s\033[0m\n' \
+          "${cfg_field:+CLAUDE_CONFIG_DIR=$cfg_field }" "$aid" "${atitle:+$atitle — }" "$(date -r "$(last_activity "$f")" '+%H:%M')"
+      done <<<"$alternates"
+    fi
     printf '\033[2m────────────────────────────────────────────\033[0m\n'
     # terminals fall back to showing the cwd as tab title once the TUI dies;
     # rename the tab to the session topic so reaped tabs stay identifiable
