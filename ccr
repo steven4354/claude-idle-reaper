@@ -5,11 +5,18 @@
 # definition OLD shells, which resolve new executables immediately but would
 # never see a function added to zshrc after they started. (A function also
 # collides with CodeRabbit's `cr` binary.)
-# Usage: ccr           resume this tab's reaped session
-#        ccr <id>      resume an explicit session id
+# Usage: ccr [claude args…]        resume this tab's reaped session
+#        ccr <id> [claude args…]   resume an explicit session id
+# Resumes with --dangerously-skip-permissions (claude does not keep permission
+# flags across a resume), unless the args already pass --permission-mode or
+# --dangerously-skip-permissions.
 # No record for this tty -> falls back to the machine's most recent reap.
 REG_DIR=${CCR_REG_DIR:-$HOME/.claude/scripts}
-[ -n "$1" ] && exec claude --resume "$1"
+perm=(--dangerously-skip-permissions)
+for a in "$@"; do
+  case "$a" in --permission-mode|--permission-mode=*|--dangerously-skip-permissions) perm=() ;; esac
+done
+case "$1" in ''|-*) ;; *) id=$1; shift; exec claude --resume "$id" "${perm[@]}" "$@";; esac
 t=$(tty 2>/dev/null)
 reg="$REG_DIR/reaped-${t##*/}"
 if [ ! -f "$reg" ]; then
@@ -17,11 +24,13 @@ if [ ! -f "$reg" ]; then
   [ -n "$reg" ] || { echo "ccr: no reaped session recorded" >&2; exit 1; }
   echo "ccr: nothing reaped in this tab — resuming most recent reap ($(basename "$reg"))" >&2
 fi
-IFS=$'\t' read -r id cwd cfg < "$reg"
+# cut, not `IFS=$'\t' read`: read treats runs of tabs as one separator, so an
+# empty field would shift the next one into its place
+id=$(cut -f1 "$reg"); cwd=$(cut -s -f2 "$reg"); cfg=$(cut -s -f3 "$reg")
 [ -n "$id" ] || { echo "ccr: $reg is empty" >&2; exit 1; }
 # `claude --resume` resolves ids per project dir — run from the session's cwd
 cd "${cwd:-$HOME}" 2>/dev/null || cd "$HOME"
 # 3rd field: the session's CLAUDE_CONFIG_DIR when it wasn't ~/.claude
 # (claude-as <profile> sessions) — resuming under the default dir can't find it
 [ -n "$cfg" ] && export CLAUDE_CONFIG_DIR="$cfg"
-exec claude --resume "$id"
+exec claude --resume "$id" "${perm[@]}" "$@"
