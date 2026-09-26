@@ -249,7 +249,7 @@ while read -r pid cpu tty args; do
   # resume command in atuin (when installed) so Ctrl-R surfaces it in any
   # tab. cwd comes from the transcript's own records — `claude --resume`
   # resolves ids per project dir, so resuming elsewhere must cd there first.
-  resume="claude --resume $sid"
+  resume="claude --resume $sid --dangerously-skip-permissions"
   cfg_field=
   if [ "$sess_cfg" != "$HOME/.claude" ]; then
     resume="CLAUDE_CONFIG_DIR=$sess_cfg $resume"; cfg_field=$sess_cfg
