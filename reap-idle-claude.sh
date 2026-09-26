@@ -316,6 +316,11 @@ while read -r pid cpu tty args; do
   fi
 
   log "reaping pid=$pid tty=$tty rss=${rss_mb}MB tty-idle=$(fmt_idle "$idle") session=$sid${alt_ids:+ alternates=$alt_ids}"
+  # the tab's identity for ccr: the shell that launched this claude, by pid AND
+  # start time. tty names are recycled when a tab closes, so a record keyed on
+  # the name alone gets served to whatever new tab inherits it.
+  tab_pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  tab_key="$tab_pid@$(ps -o lstart= -p "$tab_pid" 2>/dev/null)"
   kill "$pid" 2>/dev/null || continue
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { log "pid=$pid ignored SIGTERM, leaving it alone"; continue; }
@@ -326,14 +331,15 @@ while read -r pid cpu tty args; do
   # resume command in atuin (when installed) so Ctrl-R surfaces it in any
   # tab. cwd comes from the transcript's own records — `claude --resume`
   # resolves ids per project dir, so resuming elsewhere must cd there first.
-  resume="claude --resume $sid"
+  resume="claude --resume $sid --dangerously-skip-permissions"
   cfg_field=
   if [ "$sess_cfg" != "$HOME/.claude" ]; then
     resume="CLAUDE_CONFIG_DIR=$sess_cfg $resume"; cfg_field=$sess_cfg
   fi
   scwd=$(tail -c 50000 "$sess" | grep -o '"cwd":"[^"]*"' | tail -1 | cut -d'"' -f4)
   # third field: non-default CLAUDE_CONFIG_DIR (empty for ~/.claude); ccr exports it
-  printf '%s\t%s\t%s\n' "$sid" "${scwd:-$HOME}" "$cfg_field" > "$REG_DIR/reaped-$tty" 2>/dev/null
+  # fourth field: tab_key; ccr resumes only from that same shell
+  printf '%s\t%s\t%s\t%s\n' "$sid" "${scwd:-$HOME}" "$cfg_field" "$tab_key" > "$REG_DIR/reaped-$tty" 2>/dev/null
   hint="run: ccr"
   if [ -n "$ATUIN_BIN" ] && [ -x "$ATUIN_BIN" ]; then
     ( cd "${scwd:-$HOME}" 2>/dev/null || cd "$HOME"

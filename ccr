@@ -1,27 +1,53 @@
 #!/bin/bash
 # ccr — claude-code-resume: restart the Claude Code session that was reaped in
-# THIS terminal tab (reap-idle-claude.sh records one "<id>\t<cwd>" file per tty).
+# THIS terminal tab. reap-idle-claude.sh writes one record per tty:
+#   <id>\t<cwd>\t<config-dir>\t<shell-pid>@<shell-start-time>
 # A PATH executable rather than a shell function on purpose: reaped tabs are by
 # definition OLD shells, which resolve new executables immediately but would
 # never see a function added to zshrc after they started. (A function also
 # collides with CodeRabbit's `cr` binary.)
-# Usage: ccr           resume this tab's reaped session
-#        ccr <id>      resume an explicit session id
-# No record for this tty -> falls back to the machine's most recent reap.
+# Usage: ccr [claude args…]        resume this tab's reaped session
+#        ccr <id> [claude args…]   resume an explicit session id
+#        ccr --list                show recent reaps, newest first
+# Resumes with --dangerously-skip-permissions (claude does not keep permission
+# flags across a resume), unless the args already pass --permission-mode or
+# --dangerously-skip-permissions.
+# The record must name THIS shell. tty names are recycled, so a record from a
+# closed tab is refused rather than resumed. There is no machine-wide
+# fallback: ccr fails instead of guessing. Sessions you exit yourself are never
+# recorded; only reaped ones are.
 REG_DIR=${CCR_REG_DIR:-$HOME/.claude/scripts}
-[ -n "$1" ] && exec claude --resume "$1"
+
+if [ "$1" = --list ]; then
+  found=
+  for f in $(ls -t "$REG_DIR"/reaped-ttys* 2>/dev/null | head -15); do
+    found=1
+    printf '%s  %-8s  %s  %s  %s\n' "$(date -r "$f" '+%m-%d %H:%M')" "${f##*/reaped-}" \
+      "$(cut -f1 "$f")" "$(cut -s -f2 "$f")" "$(basename "$(cut -s -f3 "$f")" 2>/dev/null)"
+  done
+  [ -n "$found" ] || echo "ccr: no reaped sessions recorded" >&2
+  exit 0
+fi
+
+perm=(--dangerously-skip-permissions)
+for a in "$@"; do
+  case "$a" in --permission-mode|--permission-mode=*|--dangerously-skip-permissions) perm=() ;; esac
+done
+case "$1" in ''|-*) ;; *) id=$1; shift; exec claude --resume "$id" "${perm[@]}" "$@";; esac
+
+fail() { echo "ccr: $*" >&2; echo "ccr: run 'ccr --list', then 'ccr <id>'" >&2; exit 1; }
 t=$(tty 2>/dev/null)
 reg="$REG_DIR/reaped-${t##*/}"
-if [ ! -f "$reg" ]; then
-  reg=$(ls -t "$REG_DIR"/reaped-ttys* 2>/dev/null | head -1)
-  [ -n "$reg" ] || { echo "ccr: no reaped session recorded" >&2; exit 1; }
-  echo "ccr: nothing reaped in this tab — resuming most recent reap ($(basename "$reg"))" >&2
-fi
-IFS=$'\t' read -r id cwd cfg < "$reg"
-[ -n "$id" ] || { echo "ccr: $reg is empty" >&2; exit 1; }
+[ -f "$reg" ] || fail "nothing reaped in this tab"
+# cut, not `IFS=$'\t' read`: read treats runs of tabs as one separator, so an
+# empty field would shift the next one into its place
+id=$(cut -f1 "$reg"); cwd=$(cut -s -f2 "$reg"); cfg=$(cut -s -f3 "$reg"); key=$(cut -s -f4 "$reg")
+[ -n "$id" ] || fail "$reg is empty"
+me="$PPID@$(ps -o lstart= -p "$PPID" 2>/dev/null)"
+[ "$key" = "$me" ] || fail "the record for ${t##*/} is from another tab (session ${id%%-*}, $(date -r "$reg" '+%m-%d %H:%M'))"
 # `claude --resume` resolves ids per project dir — run from the session's cwd
 cd "${cwd:-$HOME}" 2>/dev/null || cd "$HOME"
 # 3rd field: the session's CLAUDE_CONFIG_DIR when it wasn't ~/.claude
 # (claude-as <profile> sessions) — resuming under the default dir can't find it
 [ -n "$cfg" ] && export CLAUDE_CONFIG_DIR="$cfg"
-exec claude --resume "$id"
+exec claude --resume "$id" "${perm[@]}" "$@"
